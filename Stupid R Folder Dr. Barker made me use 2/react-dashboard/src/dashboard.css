@@ -3,7 +3,7 @@
 
 body {
   font-family: system-ui, -apple-system, sans-serif;
-  background: var(--bg);
+  background: black;
   color: #fff;
   min-height: 100vh;
   padding-bottom: 48px;
@@ -22,7 +22,7 @@ body {
   --secondary: #FFB612;
   --bg:        #0d0908;
   --card-bg:   rgba(255,255,255,0.05);
-  --glow:      #5A141455;
+  --glow:      #E3183755;
 }
 
 /* ─── Header ───────────────────────────────────────── */
