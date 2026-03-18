@@ -24,8 +24,8 @@ const ALL_TEAMS = [
   { abbr: "JAX", name: "Jacksonville Jaguars",     conf: "AFC" },
   { abbr: "KC",  name: "Kansas City Chiefs",       conf: "AFC" },
   { abbr: "LAC", name: "LA Chargers",              conf: "AFC" },
-  { abbr: "LAR", name: "LA Rams",                  conf: "NFC" },
-  { abbr: "LVR", name: "Las Vegas Raiders",        conf: "AFC" },
+  { abbr: "LA", name: "LA Rams",                  conf: "NFC" },
+  { abbr: "LV", name: "Las Vegas Raiders",        conf: "AFC" },
   { abbr: "MIA", name: "Miami Dolphins",           conf: "AFC" },
   { abbr: "MIN", name: "Minnesota Vikings",        conf: "NFC" },
   { abbr: "NE",  name: "New England Patriots",     conf: "AFC" },
@@ -296,9 +296,53 @@ export default function Dashboard() {
   const teamInfo  = ALL_TEAMS.find(t => t.abbr === team);
   const isDefPos  = DEF_POS.includes(pos);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Themes ─────────────────────────────────────────────────────────────────
+  const NFL_THEMES = {
+    BUF: { primary: '#00338D', secondary: '#C60C30', bg: '#000F2E', glow: '#00338D55' },
+    MIA: { primary: '#008E97', secondary: '#FC4C02', bg: '#003040', glow: '#008E9755' },
+    NE:  { primary: '#002244', secondary: '#C60C30', bg: '#000D1A', glow: '#00224455' },
+    NYJ: { primary: '#125740', secondary: '#FFFFFF', bg: '#061F17', glow: '#12574055' },
+    BAL: { primary: '#241773', secondary: '#9E7C0C', bg: '#0D0827', glow: '#24177355' },
+    CLE: { primary: '#FF3C00', secondary: '#FF7C1A', bg: '#1A0C00', glow: '#FF3C0055' },
+    PIT: { primary: '#FFB612', secondary: '#101820', bg: '#060C12', glow: '#FFB61255' },
+    CIN: { primary: '#000000', secondary: '#FB4F14', bg: '#1A0A00', glow: '#FB4F1455' },
+    HOU: { primary: '#A71930', secondary: '#006497', bg: '#1A0008', glow: '#A7193055' },
+    IND: { primary: '#002C5F', secondary: '#A2AAAD', bg: '#001020', glow: '#002C5F55' },
+    JAX: { primary: '#006778', secondary: '#D4B97A', bg: '#001F25', glow: '#00677855' },
+    TEN: { primary: '#0C2340', secondary: '#4B92DB', bg: '#05101C', glow: '#4B92DB55' },
+    DEN: { primary: '#FB4F14', secondary: '#002244', bg: '#1A0A00', glow: '#FB4F1455' },
+    KC:  { primary: '#E31837', secondary: '#FFB81C', bg: '#1A0009', glow: '#E3183755' },
+    LV:  { primary: '#A5ACAF', secondary: '#C8CDD0', bg: '#060606', glow: '#A5ACAF55' },
+    LAC: { primary: '#0080C6', secondary: '#FFC20E', bg: '#00253B', glow: '#0080C655' },
+    DAL: { primary: '#003594', secondary: '#869397', bg: '#000E2B', glow: '#00359455' },
+    NYG: { primary: '#0B2265', secondary: '#A71930', bg: '#050D27', glow: '#0B226555' },
+    PHI: { primary: '#004C54', secondary: '#A5ACAF', bg: '#001B1E', glow: '#004C5455' },
+    WAS: { primary: '#5A1414', secondary: '#FFB612', bg: '#1E0606', glow: '#5A141455' },
+    CHI: { primary: '#C83803', secondary: '#235ac0', bg: '#1A0800', glow: '#C8380355' },
+    DET: { primary: '#0076B6', secondary: '#B0B7BC', bg: '#00253B', glow: '#0076B655' },
+    GB:  { primary: '#203731', secondary: '#FFB612', bg: '#0C1712', glow: '#20373155' },
+    MIN: { primary: '#4F2683', secondary: '#FFC62F', bg: '#1A0D2E', glow: '#4F268355' },
+    ATL: { primary: '#A71930', secondary: '#000000', bg: '#1A0008', glow: '#A7193055' },
+    CAR: { primary: '#0085CA', secondary: '#101820', bg: '#002840', glow: '#0085CA55' },
+    NO:  { primary: '#D3BC8D', secondary: '#004890', bg: '#0A0806', glow: '#D3BC8D55' },
+    TB:  { primary: '#D50A0A', secondary: '#34302B', bg: '#1A0000', glow: '#D50A0A55' },
+    ARI: { primary: '#97233F', secondary: '#FFB612', bg: '#1A0009', glow: '#97233F55' },
+    LA: { primary: '#003594', secondary: '#FFA300', bg: '#000E2B', glow: '#00359455' },
+    SF:  { primary: '#AA0000', secondary: '#B3995D', bg: '#1A0000', glow: '#AA000055' },
+    SEA: { primary: '#002244', secondary: '#69BE28', bg: '#000D1A', glow: '#69BE2855' },
+  };
+
+  const DEFAULT_THEME = { primary: '#3b82f6', secondary: '#93c5fd', bg: '#060a14', glow: '#3b82f655' };
+  const theme = NFL_THEMES[team] ?? DEFAULT_THEME;
+
   return (
-    <div className={`theme-${team === "KC" ? "KC" : team === "WAS" ? "WAS" : "DEFAULT"}`}>
+    <div style={{
+                '--primary':   theme.primary,
+                '--secondary': theme.secondary,
+                '--bg':        theme.bg,
+                '--card-bg':   'rgba(255,255,255,0.05)',
+                '--glow':      theme.glow,
+              }}>
 
       {/* Header */}
       <header className="header">

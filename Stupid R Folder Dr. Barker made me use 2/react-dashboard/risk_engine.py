@@ -22,7 +22,7 @@ MULTIPLIERS = {
     "DL":  {"run": 1.70, "pass": 1.20},
     "LB":  {"run": 1.55, "pass": 1.10},
     "CB":  {"run": 0.70, "pass": 1.60},
-    "DB":  {"run": 0.75, "pass": 1.55},
+    "DB":  {"run": 0.75, "pass": 1.55}, # no db because we split CB/DB
     "S":   {"run": 0.90, "pass": 1.45},
 }
 
@@ -33,7 +33,7 @@ MED_RISK  = 0.42
 ALL_TEAMS = [
     "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
     "DAL", "DEN", "DET", "GB",  "HOU", "IND", "JAX", "KC",
-    "LAC", "LAR", "LVR", "MIA", "MIN", "NE",  "NO",  "NYG",
+    "LAC", "LA", "LV", "MIA", "MIN", "NE",  "NO",  "NYG",
     "NYJ", "PHI", "PIT", "SEA", "SF",  "TB",  "TEN", "WAS",
 ]
 

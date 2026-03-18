@@ -9,20 +9,13 @@ body {
   padding-bottom: 48px;
 }
 
-/* ─── Theme Variables ──────────────────────────────── */
-.theme-KC {
-  --primary:   #E31837;
-  --secondary: #FFB81C;
-  --bg:        #120608;
+/* ─── Default Theme ────────────────── */
+.theme-DEFAULT {
+  --primary:   #3b82f6;
+  --secondary: #93c5fd;
+  --bg:        #060a14;
   --card-bg:   rgba(255,255,255,0.05);
-  --glow:      #E3183755;
-}
-.theme-WAS {
-  --primary:   #5A1414;
-  --secondary: #FFB612;
-  --bg:        #0d0908;
-  --card-bg:   rgba(255,255,255,0.05);
-  --glow:      #E3183755;
+  --glow:      #3b82f655;
 }
 
 /* ─── Header ───────────────────────────────────────── */
@@ -450,14 +443,7 @@ td { padding: 8px 14px; }
   font-size: 13px;
   color: #a78bfa;
 }
-/* ─── Default Theme (non KC/WAS teams) ────────────────── */
-.theme-DEFAULT {
-  --primary:   #3b82f6;
-  --secondary: #93c5fd;
-  --bg:        #060a14;
-  --card-bg:   rgba(255,255,255,0.05);
-  --glow:      #3b82f655;
-}
+
 
 /* ─── Team Dropdown ────────────────────────────────────── */
 .team-dropdown-wrap {
