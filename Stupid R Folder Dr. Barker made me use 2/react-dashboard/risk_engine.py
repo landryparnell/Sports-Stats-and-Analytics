@@ -1,22 +1,41 @@
 """
 risk_engine.py
 Core risk-scoring logic. Imported by generate_data.py.
+Supports all 32 NFL teams and expanded positions.
 """
 import math
 import pandas as pd
 
-POSITIONS = ["QB", "RB", "WR", "TE", "OL"]
+# Expanded positions — offense + defense
+POSITIONS = ["QB", "WR", "RB", "TE", "S", "OL", "DL", "CB", "DB", "LB"]
 
+# Offensive positions use play-type multipliers based on play involvement
+# Defensive positions are exposed on every play regardless of type
 MULTIPLIERS = {
+    # Offense — tuned by play-type exposure
     "QB":  {"run": 1.82, "pass": 1.45},
     "RB":  {"run": 1.65, "pass": 0.85},
     "WR":  {"run": 0.60, "pass": 1.55},
     "TE":  {"run": 0.90, "pass": 1.35},
     "OL":  {"run": 1.10, "pass": 1.05},
+    # Defense — higher exposure on run plays for front seven, pass for DBs
+    "DL":  {"run": 1.70, "pass": 1.20},
+    "LB":  {"run": 1.55, "pass": 1.10},
+    "CB":  {"run": 0.70, "pass": 1.60},
+    "DB":  {"run": 0.75, "pass": 1.55},
+    "S":   {"run": 0.90, "pass": 1.45},
 }
 
 HIGH_RISK = 0.68
 MED_RISK  = 0.42
+
+# All 32 NFL teams — generate_data.py will process whichever teams exist in the CSV
+ALL_TEAMS = [
+    "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE",
+    "DAL", "DEN", "DET", "GB",  "HOU", "IND", "JAX", "KC",
+    "LAC", "LAR", "LVR", "MIA", "MIN", "NE",  "NO",  "NYG",
+    "NYJ", "PHI", "PIT", "SEA", "SF",  "TB",  "TEN", "WAS",
+]
 
 
 def _safe(val, default):
@@ -86,7 +105,8 @@ def score_play(row: dict, pos: str) -> float:
 
 def load_and_clean(csv_path: str, team: str) -> pd.DataFrame:
     """
-    Load WAS_KC_filtered.csv, filter to one team's pass/run plays.
+    Load CSV, filter to one team's pass/run plays.
+    Works with any team abbreviation present in the data.
     """
     df = pd.read_csv(csv_path, low_memory=False)
     df["injury_flag"] = (
@@ -104,14 +124,15 @@ def process_team(csv_path: str, team: str) -> dict:
     df = load_and_clean(csv_path, team)
     result = {}
     for pos in POSITIONS:
-        plays   = []
-        cum     = 0.0
+        plays = []
+        cum   = 0.0
         for idx, row in enumerate(df.to_dict(orient="records"), 1):
             risk  = score_play(row, pos)
             cum  += risk
             plays.append({
                 "idx":         idx,
                 "week":        int(_safe(row.get("week"), 0)),
+                "defteam":     str(row.get("defteam", "")),   # opponent team — used by Player Risk Score Model
                 "playType":    str(row.get("play_type", "pass")),
                 "down":        int(_safe(row.get("down"), 1)),
                 "ydstogo":     int(_safe(row.get("ydstogo"), 10)),

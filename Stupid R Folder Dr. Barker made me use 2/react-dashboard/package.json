@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "generate": "python3 generate_data.py --csv data/WAS_KC_filtered.csv --out src/nflData.json",
+    "generate": "python3 generate_data.py --csv data/play_by_play_2025_filtered.csv --out src/nflData.json",
     "predev":   "npm run generate",
     "prebuild": "npm run generate",
     "dev":      "vite",
