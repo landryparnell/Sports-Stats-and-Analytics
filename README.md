@@ -5,10 +5,10 @@ This is a general repository for our NFL Injury Prediction research project.
 ## The file structure is as follows:
 
 Stupid R Folder Dr. Barker made me use 2    
-└── react-dashboard 
+└── react-dashboard     
     ├── data/   
     │   └── play_by_play_2025_filtered.csv  
-    ├── public/ 
+    ├── public/     
     │   └── nflData.json    
     ├── src/    
     │   ├── dashboard.css   
