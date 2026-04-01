@@ -44,11 +44,11 @@ const ALL_TEAMS = [
 const TEAM_MAP = Object.fromEntries(ALL_TEAMS.map(t => [t.abbr, t.name]));
 
 // Expanded position list matching Player_Risk_Score_Model.py
-const POSITIONS = ["QB", "WR", "RB", "TE", "S", "OL", "DL", "CB", "DB", "LB"];
+const POSITIONS = ["QB", "WR", "RB", "TE", "S", "OL", "DL", "CB", "LB"];
 
 // Offense vs Defense grouping
 const OFF_POS = ["QB", "WR", "RB", "TE", "OL"];
-const DEF_POS = ["DL", "LB", "CB", "DB", "S"];
+const DEF_POS = ["DL", "LB", "CB", "S"];
 
 const HIGH_RISK = 0.68;
 const MED_RISK  = 0.42;
@@ -57,7 +57,7 @@ const MED_RISK  = 0.42;
 const POSITION_FACTORS = {
   QB: 0.5, WR: 1.2, RB: 2.0, TE: 1.8,
   S:  1.6, OL: 1.4, DL: 1.6, CB: 1.4,
-  DB: 1.4, LB: 1.8
+  LB: 1.8
 };
 const RUN_FACTOR  = 1.3172;
 const PASS_FACTOR = 0.8678;
@@ -96,36 +96,21 @@ function calcOppFactor(rank) { return (33 - rank) / 16; }
  * Normalization: raw scores range from ~1.8 (low) to ~9.02 (max).
  * Max = (RB=2.0 × run=1.3172 × best_opp=(33-1)/16=2.0) + (Q4=2.0 + Wet/Cold=1.75) = 9.0188
  */
-const PRM_MAX = 9.02;  // theoretical max raw score for normalization
+// Without opponent factor, new max = (RB=2.0 × run=1.3172) + (Q4=2.0 + Wet/Cold=1.75) = 6.3844
+const PRM_MAX = 6.39;
 
-function applyPlayerRiskModel(plays, pos, oppTeam) {
+function applyPlayerRiskModel(plays, pos) {
   const posFactor = POSITION_FACTORS[pos] ?? 1.0;
 
-  // Season-quarter fatigue: maps NFL week to game-quarter analogue
-  // Weeks 1–4  → Q1 (0.5)  early season, fresh legs
-  // Weeks 5–9  → Q2 (1.0)  mid season
-  // Weeks 10–13→ Q3 (1.5)  late season fatigue building
-  // Weeks 14–18→ Q4 (2.0)  end of season, maximum fatigue
   const fatigueMod = w => w <= 4 ? 0.5 : w <= 9 ? 1.0 : w <= 13 ? 1.5 : 2.0;
-
-  // Weather derived from play data (temp/wind fields stored by risk_engine.py)
-  // Mirrors Python model: Wet/Cold = 1.75, Warm/Dry = 1.25
   const weatherMod = p => (p.temp < 40 || p.wind > 15) ? 1.75 : 1.25;
 
   let cum = 0;
   return plays.map(p => {
-    // Use the actual opponent from this play's game; fall back to dropdown selection
-    const opp      = (p.defteam && TEAM_DEFENSE_RANKINGS[p.defteam])
-                       ? p.defteam
-                       : oppTeam;
-    const oppRanks = TEAM_DEFENSE_RANKINGS[opp] ?? { rush: 16, pass: 16 };
-    const oppFact  = calcOppFactor(
-      p.playType === "run" ? oppRanks.rush : oppRanks.pass
-    );
-    const ptFact   = p.playType === "run" ? RUN_FACTOR : PASS_FACTOR;
-    const sitMod   = fatigueMod(p.week) + weatherMod(p);
+    const ptFact = p.playType === "run" ? RUN_FACTOR : PASS_FACTOR;
+    const sitMod = fatigueMod(p.week) + weatherMod(p);
 
-    const raw  = (posFactor * ptFact * oppFact) + sitMod;
+    const raw  = (posFactor * ptFact) + sitMod;
     const norm = Math.min(Math.max(raw / PRM_MAX, 0), 1);
     cum += norm;
     return {
@@ -251,9 +236,42 @@ export default function Dashboard() {
   const rawPlays      = teamAvailable ? (teamData[pos] || []) : [];
 
   const plays = useMemo(() => {
-    if (model === "player_risk") return applyPlayerRiskModel(rawPlays, pos, oppTeam);
+    if (model === "player_risk") return applyPlayerRiskModel(rawPlays, pos);
     return rawPlays;
-  }, [rawPlays, model, pos, oppTeam]);
+  }, [rawPlays, model, pos]);
+
+  const playsRiskEngine = useMemo(() => rawPlays, [rawPlays]);
+  const playsPlayerRisk = useMemo(() => applyPlayerRiskModel(rawPlays, pos), [rawPlays, pos]);
+
+  const overlaySample = useMemo(() => {
+    const step = Math.max(1, Math.floor(playsRiskEngine.length / 200));
+    return playsRiskEngine
+      .filter((_,i) => i % step === 0)
+      .map((p, i) => {
+        const prm = playsPlayerRisk[i * step];
+        return {
+          idx:     p.idx,
+          week:    p.week,
+          reRisk:  p.risk,
+          reCum:   p.cumRisk,
+          prmRisk: prm ? prm.risk    : null,
+          prmCum:  prm ? prm.cumRisk : null,
+        };
+      });
+  }, [playsRiskEngine, playsPlayerRisk]);
+
+  const weeklyBoth = useMemo(() => {
+    const allW = [...new Set(playsRiskEngine.map(p => p.week))].sort((a,b) => a - b);
+    return allW.map(w => {
+      const re  = playsRiskEngine.filter(p => p.week === w);
+      const prm = playsPlayerRisk.filter(p => p.week === w);
+      return {
+        week:   w,
+        reAvg:  re.length  ? re.reduce((a,b)  => a + b.risk, 0) / re.length  : 0,
+        prmAvg: prm.length ? prm.reduce((a,b) => a + b.risk, 0) / prm.length : 0,
+      };
+    });
+  }, [playsRiskEngine, playsPlayerRisk]);
 
   // Early returns AFTER all hooks
   if (loadErr) return (
@@ -276,7 +294,54 @@ export default function Dashboard() {
   const avgRisk  = total ? filtered.reduce((a,b) => a + b.risk, 0) / total : 0;
   const peakRisk = total ? Math.max(...filtered.map(p => p.risk)) : 0;
   const cumFinal = plays.length ? plays[plays.length-1].cumRisk : 0;
-  const subThresh = cumFinal * 0.72;
+
+  // ── Injury-history sub thresholds ─────────────────────────────────────────
+  // For each model, find all plays where isInjury===true and record cumRisk at
+  // that moment. Average those per team+position. Fall back to league-wide
+  // average for that position if team sample < MIN_INJ_SAMPLE.
+  const MIN_INJ_SAMPLE = 3;
+
+  function calcInjuryThreshold(allData, targetTeam, targetPos, modelPlaysGetter) {
+    // Collect injury cumRisk values for the target team+pos
+    const teamPlays   = allData[targetTeam]?.[targetPos] ?? [];
+    const modelPlays  = modelPlaysGetter(teamPlays, targetPos);
+    const teamInjCums = modelPlays.filter(p => p.isInjury).map(p => p.cumRisk);
+
+    if (teamInjCums.length >= MIN_INJ_SAMPLE) {
+      return {
+        value:  teamInjCums.reduce((a, b) => a + b, 0) / teamInjCums.length,
+        source: "team",
+        n:      teamInjCums.length,
+      };
+    }
+
+    // Fallback: league-wide average for this position across all available teams
+    const leagueInjCums = Object.entries(allData).flatMap(([t, posMap]) => {
+      if (t === targetTeam) return []; // exclude current team to keep it pure
+      const mp = modelPlaysGetter(posMap[targetPos] ?? [], targetPos);
+      return mp.filter(p => p.isInjury).map(p => p.cumRisk);
+    });
+
+    if (leagueInjCums.length === 0) return { value: null, source: "none", n: 0 };
+
+    return {
+      value:  leagueInjCums.reduce((a, b) => a + b, 0) / leagueInjCums.length,
+      source: "league",
+      n:      leagueInjCums.length,
+    };
+  }
+
+  // Risk Engine: raw plays straight from data (no transformation)
+  const reGetter  = (rawP) => rawP;
+  // Player Risk Score: run through the model formula
+  const prmGetter = (rawP, p) => applyPlayerRiskModel(rawP, p);
+
+  const subRE  = calcInjuryThreshold(data, team, pos, reGetter);
+  const subPRM = calcInjuryThreshold(data, team, pos, prmGetter);
+
+  const subThreshRE  = subRE.value;
+  const subThreshPRM = subPRM.value;
+  const subThresh    = model === "player_risk" ? subThreshPRM : subThreshRE;
 
   const allWeeks = [...new Set(plays.map(p => p.week))].sort((a,b)=>a-b);
   const weekly = allWeeks.map(w => {
@@ -342,6 +407,8 @@ export default function Dashboard() {
                 '--bg':        theme.bg,
                 '--card-bg':   'rgba(255,255,255,0.05)',
                 '--glow':      theme.glow,
+                background:    theme.bg,
+                minHeight:     '100vh',
               }}>
 
       {/* Header */}
@@ -424,22 +491,6 @@ export default function Dashboard() {
           {/* Model Toggle */}
           <div className="model-row">
             <ModelToggle model={model} onChange={setModel} />
-            {model === "player_risk" && (
-              <div className="opp-select-wrap">
-                <span className="opp-label">OPP FALLBACK</span>
-                <select
-                  className="opp-select"
-                  value={oppTeam}
-                  onChange={e => setOppTeam(e.target.value)}
-                  title="Used for plays where per-game opponent data is unavailable"
-                >
-                  {ALL_TEAMS.filter(t => t.abbr !== team).map(t => (
-                    <option key={t.abbr} value={t.abbr}>{t.abbr} — {t.name}</option>
-                  ))}
-                </select>
-                <span className="opp-fallback-note">per-play opp used when available</span>
-              </div>
-            )}
           </div>
         </div>
       </header>
@@ -494,176 +545,342 @@ export default function Dashboard() {
             {/* ── CUMULATIVE TAB ── */}
             {tab === "cumulative" && (
               <>
+                {/* ── Dual-model overlay line chart ── */}
                 <div className="panel">
-                  <h2 className="panel-title">Cumulative Risk Score — Season Progression</h2>
-                  <p className="panel-sub">Running total of play-level risk. Dashed line = substitution threshold ({subThresh.toFixed(0)} pts)</p>
-                  <ResponsiveContainer width="100%" height={280}>
-                    <LineChart data={cumSample} margin={{ top:8, right:24, bottom:8, left:0 }}>
+                  <h2 className="panel-title">Model Comparison — Cumulative Risk Overlay</h2>
+                  <p className="panel-sub">
+                    Substitution thresholds = avg cumulative risk at historical {pos} injury events for {TEAM_MAP[team]}.{" "}
+                    <span style={{ color:"#ef4444" }}>Red</span> = Risk Engine
+                    ({subRE.source === "team" ? `team data, n=${subRE.n}` : subRE.source === "league" ? `league fallback (team n&lt;${MIN_INJ_SAMPLE}), n=${subRE.n}` : "no injury data"}).{" "}
+                    <span style={{ color:"#f97316" }}>Orange</span> = Player Risk Score
+                    ({subPRM.source === "team" ? `team data, n=${subPRM.n}` : subPRM.source === "league" ? `league fallback (team n&lt;${MIN_INJ_SAMPLE}), n=${subPRM.n}` : "no injury data"}).
+                  </p>
+                  <ResponsiveContainer width="100%" height={320}>
+                    <LineChart data={overlaySample} margin={{ top:8, right:24, bottom:8, left:0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                       <XAxis dataKey="idx" tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }}
                         label={{ value:"Play #", position:"insideBottomRight", offset:-4, fill:"rgba(255,255,255,0.28)", fontSize:10 }} />
                       <YAxis tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }} />
-                      <Tooltip content={<CumTooltip />} />
-                      <ReferenceLine y={subThresh} stroke="#ef4444" strokeDasharray="6 4"
-                        label={{ value:`⚠ Sub at ${subThresh.toFixed(0)}`, fill:"#ef4444", fontSize:10, position:"insideTopLeft" }} />
-                      <Line type="monotone" dataKey="cumRisk" stroke="var(--secondary)"
-                        strokeWidth={2.5} dot={false} activeDot={{ r:4 }} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0].payload;
+                          return (
+                            <div className="tt">
+                              <div className="tt-title">Play #{d.idx} · Week {d.week}</div>
+                              <div className="tt-row">Risk Engine cum: <span className="tt-val" style={{ color:"var(--secondary)" }}>{d.reCum?.toFixed(1)}</span></div>
+                              <div className="tt-row">Player Risk cum: <span className="tt-val" style={{ color:"#a78bfa" }}>{d.prmCum?.toFixed(1)}</span></div>
+                              <div className="tt-row">RE play risk: <span className="tt-val" style={{ color:rc(d.reRisk) }}>{(d.reRisk*100).toFixed(1)}%</span></div>
+                              <div className="tt-row">PRM play risk: <span className="tt-val" style={{ color:rc(d.prmRisk??0) }}>{((d.prmRisk??0)*100).toFixed(1)}%</span></div>
+                            </div>
+                          );
+                        }}
+                      />
+                      {subThreshRE != null && (
+                        <ReferenceLine y={subThreshRE} stroke="#ef4444" strokeDasharray="6 4"
+                          label={{ value:`Average RE Risk Score: ${subThreshRE.toFixed(1)} (${subRE.source}, n=${subRE.n})`, fill:"#ef4444", fontSize:9, position:"insideTopLeft" }} />
+                      )}
+                      {subThreshPRM != null && (
+                        <ReferenceLine y={subThreshPRM} stroke="#f97316" strokeDasharray="6 4"
+                          label={{ value:`Average PRM Risk Score: ${subThreshPRM.toFixed(1)} (${subPRM.source}, n=${subPRM.n})`, fill:"#f97316", fontSize:9, position:"insideTopRight" }} />
+                      )}
+                      <Line type="monotone" dataKey="reCum"  stroke="var(--secondary)" strokeWidth={2.5} dot={false} activeDot={{ r:4 }} name="Risk Engine" />
+                      <Line type="monotone" dataKey="prmCum" stroke="#a78bfa"           strokeWidth={2}   dot={false} activeDot={{ r:4 }} strokeDasharray="6 3" name="Player Risk" />
                     </LineChart>
                   </ResponsiveContainer>
-                </div>
-
-                <div className="panel">
-                  <h2 className="panel-title">Per-Play Risk Score</h2>
-                  <p className="panel-sub">Each bar = one play, colored by risk classification. Sampled view.</p>
-                  <ResponsiveContainer width="100%" height={160}>
-                    <BarChart data={barSample} margin={{ top:4, right:24, bottom:4, left:0 }}>
-                      <XAxis dataKey="idx" hide />
-                      <YAxis domain={[0,1]} tickFormatter={v=>`${(v*100).toFixed(0)}%`}
-                        tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }} width={36} />
-                      <Tooltip content={<PlayTooltip />} />
-                      <ReferenceLine y={HIGH_RISK} stroke="#ef4444" strokeDasharray="3 3"
-                        label={{ value:"High", fill:"#ef4444", fontSize:9, position:"insideTopRight" }} />
-                      <ReferenceLine y={MED_RISK} stroke="#f59e0b" strokeDasharray="3 3"
-                        label={{ value:"Med", fill:"#f59e0b", fontSize:9, position:"insideTopRight" }} />
-                      <Bar dataKey="risk" radius={[2,2,0,0]}>
-                        {barSample.map((e,i) => <Cell key={i} fill={rc(e.risk)} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
                   <div className="chart-legend">
-                    <span><span style={{ color:"#ef4444" }}>■</span> HIGH ≥68%</span>
-                    <span><span style={{ color:"#f59e0b" }}>■</span> MEDIUM ≥42%</span>
-                    <span><span style={{ color:"#22c55e" }}>■</span> LOW &lt;42%</span>
+                    <span><span style={{ color:"var(--secondary)" }}>—</span> Risk Engine</span>
+                    <span><span style={{ color:"#a78bfa" }}>- -</span> Player Risk Score</span>
+                    {subThreshRE  != null
+                      ? <span><span style={{ color:"#ef4444" }}>- -</span> RE sub: {subThreshRE.toFixed(1)} pts ({subRE.source === "league" ? "league fallback" : "team avg"})</span>
+                      : <span style={{ color:"rgba(255,255,255,0.3)" }}>RE sub: no injury data</span>}
+                    {subThreshPRM != null
+                      ? <span><span style={{ color:"#f97316" }}>- -</span> PRM sub: {subThreshPRM.toFixed(1)} pts ({subPRM.source === "league" ? "league fallback" : "team avg"})</span>
+                      : <span style={{ color:"rgba(255,255,255,0.3)" }}>PRM sub: no injury data</span>}
                   </div>
                 </div>
 
-                <div className="week-cards">
-                  {weekly.map(w => (
-                    <div key={w.week}
-                      onClick={() => setWeek(week===w.week?null:w.week)}
-                      className={`week-card ${week===w.week?"active":""}`}>
-                      <div className="week-card-title">Week {w.week}</div>
-                      <div className="week-card-row">
-                        <span>Avg: <span style={{ color:rc(w.avg), fontWeight:700 }}>{(w.avg*100).toFixed(1)}%</span></span>
-                        <span className="c-red">{w.high} high</span>
+                {/* ── Side-by-side: per-play risk bars ── */}
+                <div className="side-by-side">
+                  <div className="panel side-panel">
+                    <h2 className="panel-title">Per-Play Risk — Risk Engine</h2>
+                    <p className="panel-sub">Feature-weighted scoring (sacks, down/dist, field position…)</p>
+                    <ResponsiveContainer width="100%" height={160}>
+                      <BarChart data={playsRiskEngine.filter((_,i)=>i%3===0).slice(0,250)} margin={{ top:4, right:16, bottom:4, left:0 }}>
+                        <XAxis dataKey="idx" hide />
+                        <YAxis domain={[0,1]} tickFormatter={v=>`${(v*100).toFixed(0)}%`}
+                          tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }} width={36} />
+                        <Tooltip content={<PlayTooltip />} />
+                        <ReferenceLine y={HIGH_RISK} stroke="#ef4444" strokeDasharray="3 3"
+                          label={{ value:"High", fill:"#ef4444", fontSize:9, position:"insideTopRight" }} />
+                        <ReferenceLine y={MED_RISK} stroke="#f59e0b" strokeDasharray="3 3"
+                          label={{ value:"Med", fill:"#f59e0b", fontSize:9, position:"insideTopRight" }} />
+                        <Bar dataKey="risk" radius={[2,2,0,0]}>
+                          {playsRiskEngine.filter((_,i)=>i%3===0).slice(0,250).map((e,i) => <Cell key={i} fill={rc(e.risk)} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="panel side-panel">
+                    <h2 className="panel-title">Per-Play Risk — Player Risk Score</h2>
+                    <p className="panel-sub">Position × play-type × opponent formula</p>
+                    <ResponsiveContainer width="100%" height={160}>
+                      <BarChart data={playsPlayerRisk.filter((_,i)=>i%3===0).slice(0,250)} margin={{ top:4, right:16, bottom:4, left:0 }}>
+                        <XAxis dataKey="idx" hide />
+                        <YAxis domain={[0,1]} tickFormatter={v=>`${(v*100).toFixed(0)}%`}
+                          tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }} width={36} />
+                        <Tooltip content={<PlayTooltip />} />
+                        <ReferenceLine y={HIGH_RISK} stroke="#ef4444" strokeDasharray="3 3"
+                          label={{ value:"High", fill:"#ef4444", fontSize:9, position:"insideTopRight" }} />
+                        <ReferenceLine y={MED_RISK} stroke="#f59e0b" strokeDasharray="3 3"
+                          label={{ value:"Med", fill:"#f59e0b", fontSize:9, position:"insideTopRight" }} />
+                        <Bar dataKey="risk" radius={[2,2,0,0]}>
+                          {playsPlayerRisk.filter((_,i)=>i%3===0).slice(0,250).map((e,i) => <Cell key={i} fill={rc(e.risk)} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* ── Model comparison writeup ── */}
+                <div className="panel model-compare-panel">
+                  <h2 className="panel-title">How the Two Models Weight Risk Differently</h2>
+                  <div className="model-compare-grid">
+                    <div className="model-compare-col">
+                      <div className="mc-header mc-re">Risk Engine <span className="mc-file">risk_engine.py</span></div>
+                      <div className="mc-body">
+                        <p>The Risk Engine scores each play using <strong>nine independent play-level features</strong>, weighted by Random Forest importance ranking. It treats every play as a standalone event and asks: <em>what happened on this specific snap that increases injury probability?</em></p>
+                        <ul className="mc-list">
+                          <li><span className="mc-pill mc-pill-high">High weight</span> <strong>Yards gained</strong> — big plays (positive or negative) signal high-contact situations. Gains or losses over 10 yards add 18% base risk.</li>
+                          <li><span className="mc-pill mc-pill-high">High weight</span> <strong>Game clock</strong> — late-game desperation driving riskier play-calling. Accounts for up to 14% of score.</li>
+                          <li><span className="mc-pill mc-pill-med">Medium weight</span> <strong>Score differential</strong> — large deficits correlate with hurry-up offense and aggressive defense (10%).</li>
+                          <li><span className="mc-pill mc-pill-med">Medium weight</span> <strong>Down &amp; distance</strong> — 4th downs and 3rd-and-long are flagged as elevated risk (up to 10%).</li>
+                          <li><span className="mc-pill mc-pill-low">Contact flags</span> <strong>Sacks, QB hits, fumbles, TFLs</strong> — direct contact signals baked in from nflfastR columns.</li>
+                          <li><span className="mc-pill mc-pill-low">Environmental</span> <strong>Wind &gt;15mph, temp &lt;40°F</strong> — cold/windy conditions add 5–6% each.</li>
+                        </ul>
+                        <p className="mc-note">The position-specific multiplier is applied <em>after</em> scoring, scaling the final number up or down depending on how exposed each position is on run vs. pass plays.</p>
                       </div>
-                      {w.sacks > 0 && <div className="week-card-inj" style={{ color:"#f97316" }}>🏈 {w.sacks} sack{w.sacks>1?"s":""}</div>}
-                      {w.inj   > 0 && <div className="week-card-inj">🚑 {w.inj} injury{w.inj>1?"s":""}</div>}
                     </div>
-                  ))}
+
+                    <div className="model-compare-col">
+                      <div className="mc-header mc-prm">Player Risk Score <span className="mc-file">Player_Risk_Score_Model.py</span></div>
+                      <div className="mc-body">
+                        <p>The Player Risk Score Model uses a <strong>structured mathematical formula</strong> with three macro-level factors. It asks: <em>given who is playing, in what play type, when in the season, and in what conditions — how risky is this snap?</em></p>
+                        <ul className="mc-list">
+                          <li><span className="mc-pill mc-pill-high">Primary driver</span> <strong>Position factor</strong> — RBs carry the highest inherent risk (2.0×), QBs the lowest (0.5×). This is the largest single lever in the formula and creates a 4× spread between positions.</li>
+                          <li><span className="mc-pill mc-pill-high">Primary driver</span> <strong>Play-type factor</strong> — run plays (1.317×) are treated as universally more dangerous than pass plays (0.868×), derived from historical injury rates. Every run play is riskier than every pass play, regardless of context.</li>
+                          <li><span className="mc-pill mc-pill-low">Additive modifier</span> <strong>Fatigue (week)</strong> — early season (weeks 1–4) adds 0.5 pts; late season (weeks 14–18) adds 2.0 pts. Applied additively, so it affects all positions equally in absolute terms.</li>
+                          <li><span className="mc-pill mc-pill-low">Additive modifier</span> <strong>Weather</strong> — Wet/Cold adds 1.75 pts; Warm/Dry adds 1.25. Always present and never zero — even a perfect-weather game carries the base weather cost.</li>
+                        </ul>
+                        <p className="mc-note">Because situational modifiers are <em>additive</em> (not multiplicative), they have greater relative impact on low-risk positions like QB and less on already-high-risk positions like RB. The formula produces consistent, predictable scores within each position group.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mc-divergence">
+                    <div className="mc-divergence-title">Where They Diverge</div>
+                    <div className="mc-divergence-grid">
+                      <div className="mc-div-item">
+                        <div className="mc-div-label">Late-game sacks</div>
+                        <div className="mc-div-body">Risk Engine scores these very high — sack + qb_hit + late clock + down flags all stack. Player Risk Score doesn't see individual contact events at all; only play-type and week matter.</div>
+                      </div>
+                      <div className="mc-div-item">
+                        <div className="mc-div-label">Same position, different plays</div>
+                        <div className="mc-div-body">Player Risk Score gives every RB run the same base score regardless of down, field position, or score. Risk Engine can score a 1st-and-10 run much lower than a 4th-and-1 goal-line carry.</div>
+                      </div>
+                      <div className="mc-div-item">
+                        <div className="mc-div-label">RB vs QB risk gap</div>
+                        <div className="mc-div-body">Player Risk Score bakes in a 4× position gap between RB (2.0) and QB (0.5). Risk Engine's position multiplier is narrower and only applied after all features are scored, so the gap shrinks in low-contact situations.</div>
+                      </div>
+                      <div className="mc-div-item">
+                        <div className="mc-div-label">Cold-weather games</div>
+                        <div className="mc-div-body">Both models penalize cold/wind, but Risk Engine caps the environmental contribution at ~11% of total score. Player Risk Score's additive weather modifier represents 20–30% of total raw score in extreme conditions.</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="side-by-side">
+                  <div className="panel side-panel">
+                    <h2 className="panel-title">Week Cards — Risk Engine</h2>
+                    <div className="week-cards">
+                      {allWeeks.map(w => {
+                        const wp = playsRiskEngine.filter(p => p.week === w);
+                        const avg  = wp.reduce((a,b)=>a+b.risk,0)/wp.length;
+                        const high = wp.filter(p=>p.isHigh).length;
+                        const inj  = wp.filter(p=>p.isInjury).length;
+                        const sacks= wp.filter(p=>p.sack).length;
+                        return (
+                          <div key={w} onClick={() => setWeek(week===w?null:w)}
+                            className={`week-card ${week===w?"active":""}`}>
+                            <div className="week-card-title">Week {w}</div>
+                            <div className="week-card-row">
+                              <span>Avg: <span style={{ color:rc(avg), fontWeight:700 }}>{(avg*100).toFixed(1)}%</span></span>
+                              <span className="c-red">{high} high</span>
+                            </div>
+                            {inj  >0 && <div className="week-card-inj">🚑 {inj} injury{inj>1?"s":""}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="panel side-panel">
+                    <h2 className="panel-title">Week Cards — Player Risk Score</h2>
+                    <div className="week-cards">
+                      {allWeeks.map(w => {
+                        const wp = playsPlayerRisk.filter(p => p.week === w);
+                        const avg  = wp.reduce((a,b)=>a+b.risk,0)/wp.length;
+                        const high = wp.filter(p=>p.isHigh).length;
+                        const inj  = wp.filter(p=>p.isInjury).length;
+                        return (
+                          <div key={w} onClick={() => setWeek(week===w?null:w)}
+                            className={`week-card ${week===w?"active":""}`}>
+                            <div className="week-card-title">Week {w}</div>
+                            <div className="week-card-row">
+                              <span>Avg: <span style={{ color:rc(avg), fontWeight:700 }}>{(avg*100).toFixed(1)}%</span></span>
+                              <span className="c-red">{high} high</span>
+                            </div>
+                            {inj>0 && <div className="week-card-inj">🚑 {inj} injury{inj>1?"s":""}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </>
             )}
 
             {/* ── BY WEEK TAB ── */}
             {tab === "weekly" && (
-              <div className="panel">
-                <h2 className="panel-title">Average Risk Score by Week</h2>
-                <p className="panel-sub">Click a bar to filter all views to that week</p>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={weekly} margin={{ top:8, right:24, bottom:8, left:0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                    <XAxis dataKey="week" tick={{ fill:"rgba(255,255,255,0.4)", fontSize:11 }}
-                      label={{ value:"Week", position:"insideBottomRight", offset:-4, fill:"rgba(255,255,255,0.28)", fontSize:10 }} />
-                    <YAxis domain={[0,1]} tickFormatter={v=>`${(v*100).toFixed(0)}%`}
-                      tick={{ fill:"rgba(255,255,255,0.4)", fontSize:11 }} />
-                    <Tooltip
-                      formatter={v => [`${(v*100).toFixed(1)}%`, "Avg Risk"]}
-                      labelFormatter={w => `Week ${w}`}
-                      contentStyle={{ background:"#1f2937", border:"1px solid rgba(255,255,255,0.18)", borderRadius:8, fontSize:12 }} />
-                    <ReferenceLine y={HIGH_RISK} stroke="#ef4444" strokeDasharray="4 4"
-                      label={{ value:"High Risk", fill:"#ef4444", fontSize:10, position:"insideTopLeft" }} />
-                    <ReferenceLine y={MED_RISK} stroke="#f59e0b" strokeDasharray="4 4"
-                      label={{ value:"Medium", fill:"#f59e0b", fontSize:10, position:"insideTopLeft" }} />
-                    <Bar dataKey="avg" radius={[4,4,0,0]} onClick={d => setWeek(week===d.week?null:d.week)}>
-                      {weekly.map((e,i) => (
-                        <Cell key={i} fill={rc(e.avg)} opacity={week===e.week||!week ? 1 : 0.5} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-
-                <div className="weekly-cards">
-                  {weekly.map(w => (
-                    <div key={w.week}
-                      onClick={() => setWeek(week===w.week?null:w.week)}
-                      className={`weekly-card ${week===w.week?"active":""}`}>
-                      <div className="weekly-card-top">
-                        <span style={{ fontWeight:800, fontSize:13 }}>Week {w.week}</span>
-                        <Badge cls={w.avg>=HIGH_RISK?"HIGH":w.avg>=MED_RISK?"MEDIUM":"LOW"} />
-                      </div>
-                      <div className="weekly-card-stats">
-                        <span>Avg: <b style={{ color:rc(w.avg) }}>{(w.avg*100).toFixed(1)}%</b></span>
-                        <span className="c-red">{w.high} high</span>
-                        {w.sacks>0 && <span className="c-orange">{w.sacks} sacks</span>}
-                      </div>
-                      {w.inj>0 && <div className="week-card-inj">🚑 {w.inj} injury event{w.inj>1?"s":""}</div>}
-                    </div>
-                  ))}
+              <>
+                <div className="panel">
+                  <h2 className="panel-title">Average Risk by Week — Both Models</h2>
+                  <p className="panel-sub">Side-by-side weekly averages. Gaps between lines reveal where models agree or diverge by week.</p>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={weeklyBoth} margin={{ top:8, right:24, bottom:8, left:0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                      <XAxis dataKey="week" tick={{ fill:"rgba(255,255,255,0.4)", fontSize:11 }}
+                        label={{ value:"Week", position:"insideBottomRight", offset:-4, fill:"rgba(255,255,255,0.28)", fontSize:10 }} />
+                      <YAxis domain={[0,1]} tickFormatter={v=>`${(v*100).toFixed(0)}%`}
+                        tick={{ fill:"rgba(255,255,255,0.4)", fontSize:11 }} />
+                      <Tooltip
+                        formatter={(v, name) => [`${(v*100).toFixed(1)}%`, name]}
+                        labelFormatter={w => `Week ${w}`}
+                        contentStyle={{ background:"#1f2937", border:"1px solid rgba(255,255,255,0.18)", borderRadius:8, fontSize:12 }} />
+                      <ReferenceLine y={HIGH_RISK} stroke="#ef4444" strokeDasharray="4 4" />
+                      <ReferenceLine y={MED_RISK}  stroke="#f59e0b" strokeDasharray="4 4" />
+                      <Bar dataKey="reAvg"  name="Risk Engine"       radius={[3,3,0,0]} fill="var(--secondary)" opacity={0.85} />
+                      <Bar dataKey="prmAvg" name="Player Risk Score"  radius={[3,3,0,0]} fill="#a78bfa"          opacity={0.85} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div className="chart-legend">
+                    <span><span style={{ color:"var(--secondary)" }}>■</span> Risk Engine</span>
+                    <span><span style={{ color:"#a78bfa" }}>■</span> Player Risk Score</span>
+                  </div>
                 </div>
-              </div>
+
+                <div className="side-by-side">
+                  <div className="panel side-panel">
+                    <h2 className="panel-title">By Week — Risk Engine</h2>
+                    <div className="weekly-cards">
+                      {weeklyBoth.map(w => (
+                        <div key={w.week} onClick={() => setWeek(week===w.week?null:w.week)}
+                          className={`weekly-card ${week===w.week?"active":""}`}>
+                          <div className="weekly-card-top">
+                            <span style={{ fontWeight:800, fontSize:13 }}>Week {w.week}</span>
+                            <Badge cls={w.reAvg>=HIGH_RISK?"HIGH":w.reAvg>=MED_RISK?"MEDIUM":"LOW"} />
+                          </div>
+                          <div className="weekly-card-stats">
+                            <span>Avg: <b style={{ color:rc(w.reAvg) }}>{(w.reAvg*100).toFixed(1)}%</b></span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="panel side-panel">
+                    <h2 className="panel-title">By Week — Player Risk Score</h2>
+                    <div className="weekly-cards">
+                      {weeklyBoth.map(w => (
+                        <div key={w.week} onClick={() => setWeek(week===w.week?null:w.week)}
+                          className={`weekly-card ${week===w.week?"active":""}`}>
+                          <div className="weekly-card-top">
+                            <span style={{ fontWeight:800, fontSize:13 }}>Week {w.week}</span>
+                            <Badge cls={w.prmAvg>=HIGH_RISK?"HIGH":w.prmAvg>=MED_RISK?"MEDIUM":"LOW"} />
+                          </div>
+                          <div className="weekly-card-stats">
+                            <span>Avg: <b style={{ color:rc(w.prmAvg) }}>{(w.prmAvg*100).toFixed(1)}%</b></span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
             )}
 
             {/* ── PLAY TABLE TAB ── */}
             {tab === "table" && (
-              <div className="panel" style={{ padding:0, overflow:"hidden" }}>
-                <div className="table-header">
-                  <div>
-                    <div className="table-header-title">Play-Level Risk Classification</div>
-                    <div className="table-header-sub">
-                      Showing {Math.min(filtered.length,150)} of {filtered.length} plays
+              <div className="side-by-side side-by-side-tables">
+                {[
+                  { label: "Risk Engine", data: week ? playsRiskEngine.filter(p=>p.week===week) : playsRiskEngine },
+                  { label: "Player Risk Score", data: week ? playsPlayerRisk.filter(p=>p.week===week) : playsPlayerRisk },
+                ].map(({ label, data: tdata }) => (
+                  <div key={label} className="panel side-panel" style={{ padding:0, overflow:"hidden" }}>
+                    <div className="table-header">
+                      <div>
+                        <div className="table-header-title">{label}</div>
+                        <div className="table-header-sub">Showing {Math.min(tdata.length,150)} of {tdata.length} plays</div>
+                      </div>
+                      <div className="table-counts">
+                        <span><b className="c-red">{tdata.filter(p=>p.cls==="HIGH").length}</b> HIGH</span>
+                        <span><b className="c-yellow">{tdata.filter(p=>p.cls==="MEDIUM").length}</b> MED</span>
+                        <span><b className="c-green">{tdata.filter(p=>p.cls==="LOW").length}</b> LOW</span>
+                      </div>
+                    </div>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            {["Play#","Wk","Type","Dn","Dist","Yardline","Gained","Score Δ","QB Hit","Sack","Risk %","Class"].map(h=>(
+                              <th key={h}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tdata.slice(0,150).map((p,i) => (
+                            <tr key={i} className={p.isInjury?"row-injury":p.isHigh?"row-high":""}>
+                              <td className="td-muted">{p.idx}</td>
+                              <td className="td-muted">{p.week}</td>
+                              <td className={`td-${p.playType==="pass"?"pass":p.playType==="run"?"run":"special"}`}
+                                style={{ textTransform:"capitalize" }}>{p.playType}</td>
+                              <td className="td-pos">{p.down}</td>
+                              <td className="td-pos">{p.ydstogo}</td>
+                              <td className="td-pos">{p.yardline}</td>
+                              <td className={p.yardsGained>=0?"td-gain-pos":"td-gain-neg"}>
+                                {p.yardsGained>=0?"+":""}{p.yardsGained}
+                              </td>
+                              <td style={{ color: p.scoreDiff>0?"#22c55e":p.scoreDiff<0?"#ef4444":"rgba(255,255,255,0.4)" }}>
+                                {p.scoreDiff>0?"+":""}{p.scoreDiff}
+                              </td>
+                              <td>{p.qbHit  && <span className="td-flag">💥</span>}</td>
+                              <td>{p.sack   && <span className="td-flag">🏈</span>}</td>
+                              <td className="td-risk" style={{ color:rc(p.risk) }}>{(p.risk*100).toFixed(1)}%</td>
+                              <td><Badge cls={p.cls} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
-                  <div className="table-counts">
-                    <span><b className="c-red">{highCnt}</b> HIGH</span>
-                    <span><b className="c-yellow">{filtered.filter(p=>p.cls==="MEDIUM").length}</b> MED</span>
-                    <span><b className="c-green">{filtered.filter(p=>p.cls==="LOW").length}</b> LOW</span>
-                  </div>
-                </div>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        {["Play#","Wk","Type","Dn","Dist","Yardline","Gained","Score Δ","QB Hit","Sack","Risk %","Class"].map(h=>(
-                          <th key={h}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtered.slice(0,150).map((p,i) => (
-                        <tr key={i} className={p.isInjury?"row-injury":p.isHigh?"row-high":""}>
-                          <td className="td-muted">{p.idx}</td>
-                          <td className="td-muted">{p.week}</td>
-                          <td className={`td-${p.playType==="pass"?"pass":p.playType==="run"?"run":"special"}`}
-                            style={{ textTransform:"capitalize" }}>{p.playType}</td>
-                          <td className="td-pos">{p.down}</td>
-                          <td className="td-pos">{p.ydstogo}</td>
-                          <td className="td-pos">{p.yardline}</td>
-                          <td className={p.yardsGained>=0?"td-gain-pos":"td-gain-neg"}>
-                            {p.yardsGained>=0?"+":""}{p.yardsGained}
-                          </td>
-                          <td style={{ color: p.scoreDiff>0?"#22c55e":p.scoreDiff<0?"#ef4444":"rgba(255,255,255,0.4)" }}>
-                            {p.scoreDiff>0?"+":""}{p.scoreDiff}
-                          </td>
-                          <td>{p.qbHit  && <span className="td-flag">💥</span>}</td>
-                          <td>{p.sack   && <span className="td-flag">🏈</span>}</td>
-                          <td className="td-risk" style={{ color:rc(p.risk) }}>{(p.risk*100).toFixed(1)}%</td>
-                          <td><Badge cls={p.cls} /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                ))}
               </div>
             )}
           </>
         )}
 
         <p className="footer">
-          Model:{" "}
-          {model === "risk_engine"
-            ? "Risk Engine (risk_engine.py) — Random Forest feature scoring · Thresholds: HIGH ≥68% · MEDIUM ≥42%"
-            : "Player Risk Score (Player_Risk_Score_Model.py) — Position × Play-Type × Opponent · Normalized to [0,1]"}
+          Both models run simultaneously — Risk Engine (risk_engine.py) uses play-level feature scoring · Player Risk Score (Player_Risk_Score_Model.py) uses Position × Play-Type × Opponent formula · Thresholds: HIGH ≥68% · MEDIUM ≥42%
         </p>
       </main>
     </div>

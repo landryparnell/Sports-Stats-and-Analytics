@@ -7,16 +7,11 @@ play_by_play_2025 <- read_csv("play_by_play_2025.csv")
 
 filtered <- sqldf("
   SELECT
-    play_id, game_id, week, posteam, defteam,
-    play_type, yards_gained, game_seconds_remaining,
-    wp, score_differential, yardline_100,
-    down, ydstogo, qb_hit, sack,
-    tackled_for_loss, fumble, wind, temp, desc
+    distinct posteam
   FROM play_by_play_2025
-  WHERE play_type <> 'kickoff'
-    AND play_type <> 'punt'
-    AND play_type IS NOT NULL
 ")
+
+View(filtered)
 
 write.csv(filtered, file = "play_by_play_2025_filtered.csv", row.names = FALSE)
 
