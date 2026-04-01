@@ -5,7 +5,7 @@ This is a general repository for our NFL Injury Prediction research project.
 ## The file structure is as follows:
 
 Stupid R Folder Dr. Barker made me use 2    
-└── react-dashboard     
+<ul>└── react-dashboard     
     ├── data/   
     │   └── play_by_play_2025_filtered.csv  
     ├── public/     
@@ -26,7 +26,7 @@ Stupid R Folder Dr. Barker made me use 2
     ├── multiplier.py   
     ├── NFLProject.R    
     ├── play_by_play_2025.csv   
-    └── README.md   
+    └── README.md   <ul>
 
 The react-dashboard contains the visualization of Claire's mathematical model which is depicted in `Player Risk Score Model.py` and Landry's machine learning model that output the weighted factors is `iteratiion2.py` with the dashboard function being contained in `risk_engine.py`.
 
