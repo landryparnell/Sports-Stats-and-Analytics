@@ -9,13 +9,17 @@ import os
 
 DATA_DIR = r'C:\Users\clair\OneDrive\Documents\Sports Stats\MATH 302'
 
-#Factor Dictionaries
+# ─────────────────────────────────────────────────────────────────────────────
+# FACTOR DICTIONARIES
+# ─────────────────────────────────────────────────────────────────────────────
 
 #Position Factors (preset)
+#Original values from Claire's model — unchanged.
+#DB added explicitly (same exposure class as CB).
 position_factors = {
-    'QB': 0.5, 'WR': 1.2, 'RB': 2.0, 'TE': 1.8,
-    'S' : 1.6, 'OL': 1.4, 'DL': 1.6, 'CB': 1.4,
-    'DB': 1.4, 'LB': 1.8
+    'QB': 0.5,  'WR': 1.2,  'RB': 2.0,  'TE': 1.8,
+    'S' : 1.6,  'OL': 1.4,  'DL': 1.6,  'CB': 1.4,
+    'DB': 1.4,  'LB': 1.8,
 }
 
 #Play Type Factors (from Landry's Machine Learning Model)
@@ -23,7 +27,10 @@ run_factor  = 1.3172   # injury rate: 5.3305%
 pass_factor = 0.8678   # injury rate: 3.5117%
 
 #Opponent Factor (Defense Ranking for Rushing & Passing)
-#source: https://www.foxsports.com/articles/nfl/2025-nfl-defense-rankings-team-pass-and-rush-stats
+#Source: https://www.foxsports.com/articles/nfl/2025-nfl-defense-rankings-team-pass-and-rush-stats
+#Formula: (33 - rank) / 16
+#  rank 1  (best defense)  → 2.0000  (highest risk — elite D forces contested plays)
+#  rank 32 (worst defense) → 0.0625  (lowest risk)
 team_defense_rankings = {
     'ARI': {'rush': 25, 'pass': 24},
     'ATL': {'rush': 24, 'pass': 13},
@@ -42,8 +49,8 @@ team_defense_rankings = {
     'JAX': {'rush':  1, 'pass': 21},
     'KC' : {'rush':  9, 'pass': 12},
     'LAC': {'rush':  8, 'pass':  5},
-    'LAR': {'rush': 12, 'pass': 19},
-    'LVR': {'rush': 17, 'pass': 14},
+    'LA' : {'rush': 12, 'pass': 19},   # Rams (nflfastR abbr: LA)
+    'LV' : {'rush': 17, 'pass': 14},   # Raiders (nflfastR abbr: LV)
     'MIA': {'rush': 26, 'pass': 18},
     'MIN': {'rush': 21, 'pass':  2},
     'NE' : {'rush':  6, 'pass':  9},
@@ -63,14 +70,111 @@ team_defense_rankings = {
 fatigue_modifiers = {'Q1': 0.5, 'Q2': 1.0, 'Q3': 1.5, 'Q4': 2.0}
 weather_modifiers = {'Wet/Cold': 1.75, 'Warm/Dry': 1.25}
 
-#Functions
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
 def calc_opp_factor(rank):
+    """Convert a defense ranking (1-32) to an opponent factor via (33 - rank) / 16."""
     return round((33 - rank) / 16, 4)
 
-def calc_position_risk(pos_factor, play_type_factor, opp_factor, sit_mod):  # FIX: renamed from calc_player_risk
+
+def calc_position_risk(pos_factor, play_type_factor, opp_factor, sit_mod):
+    """
+    Player Risk Score formula (unchanged from original):
+        (pos_factor x play_type_factor x opp_factor) + sit_mod
+
+    sit_mod = fatigue_modifier + weather_modifier
+    """
     return round((pos_factor * play_type_factor * opp_factor) + sit_mod, 4)
 
-#Input Section
+
+def week_to_quarter(week):
+    """
+    Map an NFL season week number (1-18) to a fatigue quarter label.
+
+    This is the integration bridge between the play-by-play CSV data (which
+    uses week numbers) and Claire's quarter-based fatigue modifier system.
+    Used by risk_engine.py and the dashboard so both models use the same
+    fatigue values.
+
+        Weeks  1-4  -> Q1 (0.5)  early season, off-season conditioning fresh
+        Weeks  5-9  -> Q2 (1.0)  mid-season baseline wear
+        Weeks 10-13 -> Q3 (1.5)  post-bye fatigue building
+        Weeks 14-18 -> Q4 (2.0)  late season, roster attrition, desperation
+    """
+    if week <= 4:
+        return 'Q1'
+    elif week <= 9:
+        return 'Q2'
+    elif week <= 13:
+        return 'Q3'
+    else:
+        return 'Q4'
+
+
+def season_risk_increase(plays_df, position=None):
+    """
+    Compute per-week average risk score and cumulative season increase.
+
+    Given a DataFrame with 'week' and 'risk_score' columns (optionally filtered
+    by 'position'), shows how risk evolves week-over-week across the season.
+
+    Args:
+        plays_df : DataFrame with at minimum 'week' and 'risk_score' columns.
+        position : If provided and 'position' column exists, filters to that position.
+
+    Returns:
+        pd.DataFrame with columns:
+            week            - season week number
+            avg_risk        - mean risk score for that week
+            pct_change      - % change vs. prior week (NaN for week 1)
+            season_increase - cumulative % change from Week 1
+
+    Example:
+        df['quarter']    = df['week'].apply(week_to_quarter)
+        df['fatigue']    = df['quarter'].map(fatigue_modifiers)
+        df['sit_mod']    = df['fatigue'] + weather_modifiers['Warm/Dry']
+        df['opp_factor'] = df['defteam'].apply(
+            lambda t: calc_opp_factor(team_defense_rankings[t]['rush'])
+        )
+        df['risk_score'] = df.apply(
+            lambda r: calc_position_risk(
+                position_factors[r['position']],
+                run_factor if r['play_type'] == 'run' else pass_factor,
+                r['opp_factor'],
+                r['sit_mod']
+            ), axis=1
+        )
+        trend = season_risk_increase(df, position='RB')
+        print(trend)
+    """
+    df = plays_df.copy()
+    if position and 'position' in df.columns:
+        df = df[df['position'] == position]
+
+    weekly = (
+        df.groupby('week')['risk_score']
+        .mean()
+        .reset_index()
+        .rename(columns={'risk_score': 'avg_risk'})
+        .sort_values('week')
+    )
+
+    week1_risk = weekly['avg_risk'].iloc[0] if len(weekly) > 0 else 1.0
+    weekly['pct_change']      = weekly['avg_risk'].pct_change() * 100
+    weekly['season_increase'] = ((weekly['avg_risk'] - week1_risk) / week1_risk) * 100
+    weekly['avg_risk']        = weekly['avg_risk'].round(4)
+    weekly['pct_change']      = weekly['pct_change'].round(2)
+    weekly['season_increase'] = weekly['season_increase'].round(2)
+
+    return weekly.reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INPUT SECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
 print("=" * 50)
 print("    NFL PLAYER RISK SCORE CALCULATOR")
 print("=" * 50)
@@ -111,7 +215,10 @@ while True:
         break
     print("  Please enter 'Wet/Cold' or 'Warm/Dry'.")
 
-#Calculations
+# ─────────────────────────────────────────────────────────────────────────────
+# CALCULATIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
 opp_rush_rank   = team_defense_rankings[opp]['rush']
 opp_pass_rank   = team_defense_rankings[opp]['pass']
 rush_opp_factor = calc_opp_factor(opp_rush_rank)
@@ -120,7 +227,7 @@ fatigue_mod     = fatigue_modifiers[quarter]
 weather_mod     = weather_modifiers[weather]
 sit_modifiers   = fatigue_mod + weather_mod
 
-#Build Position Risk Table  # FIX: replaced all roster/summary code with this
+#Build Position Risk Table
 rows = []
 for position, pos_factor in position_factors.items():
     run_risk  = calc_position_risk(pos_factor, run_factor,  rush_opp_factor, sit_modifiers)
@@ -134,7 +241,10 @@ results.index += 1
 play_run_risk  = round((run_factor  * rush_opp_factor) + sit_modifiers, 4)
 play_pass_risk = round((pass_factor * pass_opp_factor) + sit_modifiers, 4)
 
-#Output
+# ─────────────────────────────────────────────────────────────────────────────
+# OUTPUT
+# ─────────────────────────────────────────────────────────────────────────────
+
 print("\n" + "=" * 50)
 print(f"  RISK SCORES vs {opp} | {quarter} | {weather}")
 print(f"\n  Opponent Rush Defense Rank: #{opp_rush_rank}  (Factor: {rush_opp_factor})")
@@ -151,23 +261,3 @@ print(results.to_string())
 #Export
 #results.to_csv(os.path.join(DATA_DIR, 'Position_Risk_Scores.csv'), index=False)
 #print(f"\nData saved to Position_Risk_Scores.csv")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

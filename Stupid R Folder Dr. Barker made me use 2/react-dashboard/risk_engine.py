@@ -146,7 +146,7 @@ def process_team(csv_path: str, team: str) -> dict:
                 "fumble":      bool(_safe(row.get("fumble"),           0) > 0),
                 "risk":        risk,
                 "cumRisk":     round(cum, 2),
-                "isInjury":    bool(row.get("injury_flag", 0)),
+                "isInjuryPlay": bool(row.get("injury_flag", 0)),
                 "isHigh":      risk >= HIGH_RISK,
                 "cls": (
                     "HIGH"   if risk >= HIGH_RISK else

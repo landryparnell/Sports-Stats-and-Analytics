@@ -56,11 +56,22 @@ const MED_RISK  = 0.42;
 // ─── Player Risk Score Model constants (from Player_Risk_Score_Model.py) ──────
 const POSITION_FACTORS = {
   QB: 0.5, WR: 1.2, RB: 2.0, TE: 1.8,
-  S:  1.6, OL: 1.4, DL: 1.6, CB: 1.4,
-  LB: 1.8
+  S: 1.6, OL: 1.4, DL: 1.6, CB: 1.4,
+  DB: 1.4, LB: 1.8,
 };
-const RUN_FACTOR  = 1.3172;
-const PASS_FACTOR = 0.8678;
+
+const MULTIPLIERS = {
+  QB: { run: 1.82, pass: 1.45 },
+  RB: { run: 1.65, pass: 0.85 },
+  WR: { run: 0.60, pass: 1.55 },
+  TE: { run: 0.90, pass: 1.35 },
+  OL: { run: 1.10, pass: 1.05 },
+  DL: { run: 1.70, pass: 1.20 },
+  LB: { run: 1.55, pass: 1.10 },
+  CB: { run: 0.70, pass: 1.60 },
+  DB: { run: 0.75, pass: 1.55 },
+  S: { run: 0.90, pass: 1.45 },
+};
 const TEAM_DEFENSE_RANKINGS = {
   ARI: { rush: 25, pass: 24 }, ATL: { rush: 24, pass: 13 },
   BAL: { rush: 10, pass: 30 }, BUF: { rush: 28, pass:  1 },
@@ -70,8 +81,8 @@ const TEAM_DEFENSE_RANKINGS = {
   DET: { rush: 14, pass: 20 }, GB:  { rush: 18, pass: 11 },
   HOU: { rush:  4, pass:  6 }, IND: { rush:  7, pass: 30 },
   JAX: { rush:  1, pass: 21 }, KC:  { rush:  9, pass: 12 },
-  LAC: { rush:  8, pass:  5 }, LAR: { rush: 12, pass: 19 },
-  LVR: { rush: 17, pass: 14 }, MIA: { rush: 26, pass: 18 },
+  LAC: { rush:  8, pass:  5 }, LA:  { rush: 12, pass: 19 },
+  LV:  { rush: 17, pass: 14 }, MIA: { rush: 26, pass: 18 },
   MIN: { rush: 21, pass:  2 }, NE:  { rush:  6, pass:  9 },
   NO:  { rush: 19, pass:  4 }, NYG: { rush: 31, pass: 16 },
   NYJ: { rush: 29, pass: 17 }, PHI: { rush: 22, pass:  8 },
@@ -87,38 +98,39 @@ function calcOppFactor(rank) { return (33 - rank) / 16; }
 
 /**
  * Re-score plays through the Player Risk Score Model lens.
- * Formula: (posFactor × playTypeFactor × oppFactor) + sitModifiers
- *   where sitModifiers = fatigueMod(week) + weatherMod(temp, wind)
+ * Formula: (positionFactor × playTypeMultiplier × opponentFactor) + situationalModifiers
+ *   where situationalModifiers = fatigueMod(week) + weatherMod(temp, wind)
  *
- * Per-play defteam is used when available (stored by risk_engine.py).
- * oppTeam dropdown acts as a fallback for plays missing defteam.
- *
- * Normalization: raw scores range from ~1.8 (low) to ~9.02 (max).
- * Max = (RB=2.0 × run=1.3172 × best_opp=(33-1)/16=2.0) + (Q4=2.0 + Wet/Cold=1.75) = 9.0188
+ * Per-play defteam is used when available from risk_engine.py.
+ * Normalization uses the highest plausible raw score:
+ *   (RB=2.0 × run=1.65 × best_opp=2.0) + (Q4=2.0 + Wet/Cold=1.75) = 10.35
  */
-// Without opponent factor, new max = (RB=2.0 × run=1.3172) + (Q4=2.0 + Wet/Cold=1.75) = 6.3844
-const PRM_MAX = 6.39;
+const PRM_MAX = 10.35;
 
 function applyPlayerRiskModel(plays, pos) {
   const posFactor = POSITION_FACTORS[pos] ?? 1.0;
-
   const fatigueMod = w => w <= 4 ? 0.5 : w <= 9 ? 1.0 : w <= 13 ? 1.5 : 2.0;
   const weatherMod = p => (p.temp < 40 || p.wind > 15) ? 1.75 : 1.25;
 
   let cum = 0;
   return plays.map(p => {
-    const ptFact = p.playType === "run" ? RUN_FACTOR : PASS_FACTOR;
+    const ptFact = MULTIPLIERS[pos]?.[p.playType] ?? 1.0;
     const sitMod = fatigueMod(p.week) + weatherMod(p);
 
-    const raw  = (posFactor * ptFact) + sitMod;
+    const defteam = (p.defteam || "").toUpperCase();
+    const defRanks = TEAM_DEFENSE_RANKINGS[defteam];
+    const oppRank = defRanks ? (p.playType === "run" ? defRanks.rush : defRanks.pass) : null;
+    const oppFactor = oppRank != null ? calcOppFactor(oppRank) : 1.0;
+
+    const raw = (posFactor * ptFact * oppFactor) + sitMod;
     const norm = Math.min(Math.max(raw / PRM_MAX, 0), 1);
     cum += norm;
     return {
       ...p,
-      risk:    parseFloat(norm.toFixed(4)),
+      risk: parseFloat(norm.toFixed(4)),
       cumRisk: parseFloat(cum.toFixed(2)),
-      isHigh:  norm >= HIGH_RISK,
-      cls:     norm >= HIGH_RISK ? "HIGH" : norm >= MED_RISK ? "MEDIUM" : "LOW",
+      isHigh: norm >= HIGH_RISK,
+      cls: norm >= HIGH_RISK ? "HIGH" : norm >= MED_RISK ? "MEDIUM" : "LOW",
     };
   });
 }
@@ -179,7 +191,7 @@ const PlayTooltip = ({ active, payload }) => {
       {d.sack    && <div className="tt-injury">🏈 SACK</div>}
       {d.qbHit   && <div className="tt-injury">💥 QB HIT</div>}
       {d.fumble  && <div className="tt-injury">⚠ FUMBLE</div>}
-      {d.isInjury && <div className="tt-injury">🚑 INJURY IN DESC</div>}
+      {d.isInjuryPlay && <div className="tt-injury">🚑 INJURY IN DESC</div>}
     </div>
   );
 };
@@ -192,7 +204,7 @@ const CumTooltip = ({ active, payload }) => {
       <div className="tt-title">Play #{d.idx} · Week {d.week}</div>
       <div className="tt-row">Cumulative Risk: <span className="tt-val" style={{ color:"#a78bfa" }}>{d.cumRisk.toFixed(1)}</span></div>
       <div className="tt-row">This Play: <span className="tt-val" style={{ color: rc(d.risk) }}>{(d.risk*100).toFixed(1)}%</span></div>
-      {d.isInjury && <div className="tt-injury">🚑 INJURY EVENT</div>}
+      {d.isInjuryPlay && <div className="tt-injury">🚑 INJURY EVENT</div>}
     </div>
   );
 };
@@ -289,14 +301,14 @@ export default function Dashboard() {
   const filtered = week ? plays.filter(p => p.week === week) : plays;
   const total    = filtered.length;
   const highCnt  = filtered.filter(p => p.isHigh).length;
-  const injCnt   = filtered.filter(p => p.isInjury).length;
+  const injCnt   = filtered.filter(p => p.isInjuryPlay).length;
   const sackCnt  = filtered.filter(p => p.sack).length;
   const avgRisk  = total ? filtered.reduce((a,b) => a + b.risk, 0) / total : 0;
   const peakRisk = total ? Math.max(...filtered.map(p => p.risk)) : 0;
   const cumFinal = plays.length ? plays[plays.length-1].cumRisk : 0;
 
   // ── Injury-history sub thresholds ─────────────────────────────────────────
-  // For each model, find all plays where isInjury===true and record cumRisk at
+  // For each model, find all plays where isInjuryPlay===true and record cumRisk at
   // that moment. Average those per team+position. Fall back to league-wide
   // average for that position if team sample < MIN_INJ_SAMPLE.
   const MIN_INJ_SAMPLE = 3;
@@ -305,7 +317,7 @@ export default function Dashboard() {
     // Collect injury cumRisk values for the target team+pos
     const teamPlays   = allData[targetTeam]?.[targetPos] ?? [];
     const modelPlays  = modelPlaysGetter(teamPlays, targetPos);
-    const teamInjCums = modelPlays.filter(p => p.isInjury).map(p => p.cumRisk);
+    const teamInjCums = modelPlays.filter(p => p.isInjuryPlay).map(p => p.cumRisk);
 
     if (teamInjCums.length >= MIN_INJ_SAMPLE) {
       return {
@@ -319,7 +331,7 @@ export default function Dashboard() {
     const leagueInjCums = Object.entries(allData).flatMap(([t, posMap]) => {
       if (t === targetTeam) return []; // exclude current team to keep it pure
       const mp = modelPlaysGetter(posMap[targetPos] ?? [], targetPos);
-      return mp.filter(p => p.isInjury).map(p => p.cumRisk);
+      return mp.filter(p => p.isInjuryPlay).map(p => p.cumRisk);
     });
 
     if (leagueInjCums.length === 0) return { value: null, source: "none", n: 0 };
@@ -350,7 +362,7 @@ export default function Dashboard() {
       week: w,
       avg:  wp.reduce((a,b) => a + b.risk, 0) / wp.length,
       high: wp.filter(p => p.isHigh).length,
-      inj:  wp.filter(p => p.isInjury).length,
+      inj:  wp.filter(p => p.isInjuryPlay).length,
       sacks:wp.filter(p => p.sack).length,
     };
   });
@@ -520,7 +532,7 @@ export default function Dashboard() {
               <StatCard label="Avg Risk"      value={`${(avgRisk*100).toFixed(1)}%`}   sub="per play" colorClass={avgRisk>=HIGH_RISK?"c-red":avgRisk>=MED_RISK?"c-yellow":"c-green"} />
               <StatCard label="Peak Risk"     value={`${(peakRisk*100).toFixed(1)}%`}  sub="single play" colorClass="c-orange" />
               <StatCard label="Sacks"         value={sackCnt}                          sub="contact plays" colorClass="c-orange" />
-              <StatCard label="Injury Events" value={injCnt}                           sub="in play desc" colorClass="c-red" />
+              <StatCard label="Injury Plays" value={injCnt}                           sub="text-matched plays" colorClass="c-red" />
               <StatCard label="Cumulative"    value={cumFinal.toFixed(0)}              sub="season total" colorClass="c-purple" />
             </div>
 
@@ -549,18 +561,22 @@ export default function Dashboard() {
                 <div className="panel">
                   <h2 className="panel-title">Model Comparison — Cumulative Risk Overlay</h2>
                   <p className="panel-sub">
-                    Substitution thresholds = avg cumulative risk at historical {pos} injury events for {TEAM_MAP[team]}.{" "}
-                    <span style={{ color:"#ef4444" }}>Red</span> = Risk Engine
-                    ({subRE.source === "team" ? `team data, n=${subRE.n}` : subRE.source === "league" ? `league fallback (team n&lt;${MIN_INJ_SAMPLE}), n=${subRE.n}` : "no injury data"}).{" "}
-                    <span style={{ color:"#f97316" }}>Orange</span> = Player Risk Score
-                    ({subPRM.source === "team" ? `team data, n=${subPRM.n}` : subPRM.source === "league" ? `league fallback (team n&lt;${MIN_INJ_SAMPLE}), n=${subPRM.n}` : "no injury data"}).
+                    Substitution thresholds = average cumulative risk at historical {pos} injury events for {TEAM_MAP[team]}.{" "}
                   </p>
                   <ResponsiveContainer width="100%" height={320}>
                     <LineChart data={overlaySample} margin={{ top:8, right:24, bottom:8, left:0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                       <XAxis dataKey="idx" tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }}
                         label={{ value:"Play #", position:"insideBottomRight", offset:-4, fill:"rgba(255,255,255,0.28)", fontSize:10 }} />
-                      <YAxis tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }} />
+                      <YAxis
+                        tick={{ fill: "rgba(255,255,255,0.6)" }}
+                        label={{
+                          value: "Current Cumulative Risk Score",
+                          angle: -90,
+                          position: "insideLeft",
+                          style: { textAnchor: "middle", fill: "rgba(255,255,255,0.7)" }
+                        }}
+                      />
                       <Tooltip
                         content={({ active, payload }) => {
                           if (!active || !payload?.length) return null;
@@ -568,8 +584,8 @@ export default function Dashboard() {
                           return (
                             <div className="tt">
                               <div className="tt-title">Play #{d.idx} · Week {d.week}</div>
-                              <div className="tt-row">Risk Engine cum: <span className="tt-val" style={{ color:"var(--secondary)" }}>{d.reCum?.toFixed(1)}</span></div>
-                              <div className="tt-row">Player Risk cum: <span className="tt-val" style={{ color:"#a78bfa" }}>{d.prmCum?.toFixed(1)}</span></div>
+                              <div className="tt-row">Risk Engine: <span className="tt-val" style={{ color:"var(--secondary)" }}>{d.reCum?.toFixed(1)}</span></div>
+                              <div className="tt-row">Player Risk: <span className="tt-val" style={{ color:"#a78bfa" }}>{d.prmCum?.toFixed(1)}</span></div>
                               <div className="tt-row">RE play risk: <span className="tt-val" style={{ color:rc(d.reRisk) }}>{(d.reRisk*100).toFixed(1)}%</span></div>
                               <div className="tt-row">PRM play risk: <span className="tt-val" style={{ color:rc(d.prmRisk??0) }}>{((d.prmRisk??0)*100).toFixed(1)}%</span></div>
                             </div>
@@ -578,25 +594,25 @@ export default function Dashboard() {
                       />
                       {subThreshRE != null && (
                         <ReferenceLine y={subThreshRE} stroke="#ef4444" strokeDasharray="6 4"
-                          label={{ value:`Average RE Risk Score: ${subThreshRE.toFixed(1)} (${subRE.source}, n=${subRE.n})`, fill:"#ef4444", fontSize:9, position:"insideTopLeft" }} />
+                          label={{ value:`Average ML Risk Score: ${subThreshRE.toFixed(1)}`, fill:"#ef4444", fontSize:9, position:"insideTopLeft" }} />
                       )}
                       {subThreshPRM != null && (
                         <ReferenceLine y={subThreshPRM} stroke="#f97316" strokeDasharray="6 4"
-                          label={{ value:`Average PRM Risk Score: ${subThreshPRM.toFixed(1)} (${subPRM.source}, n=${subPRM.n})`, fill:"#f97316", fontSize:9, position:"insideTopRight" }} />
+                          label={{ value:`Average MATH Risk Score: ${subThreshPRM.toFixed(1)}`, fill:"#f97316", fontSize:9, position:"insideTopRight" }} />
                       )}
                       <Line type="monotone" dataKey="reCum"  stroke="var(--secondary)" strokeWidth={2.5} dot={false} activeDot={{ r:4 }} name="Risk Engine" />
                       <Line type="monotone" dataKey="prmCum" stroke="#a78bfa"           strokeWidth={2}   dot={false} activeDot={{ r:4 }} strokeDasharray="6 3" name="Player Risk" />
                     </LineChart>
                   </ResponsiveContainer>
                   <div className="chart-legend">
-                    <span><span style={{ color:"var(--secondary)" }}>—</span> Risk Engine</span>
-                    <span><span style={{ color:"#a78bfa" }}>- -</span> Player Risk Score</span>
+                    <span><span style={{ color:"var(--secondary)" }}>—</span> Machine Learning Model</span>
+                    <span><span style={{ color:"#a78bfa" }}>- -</span> Mathematical Model</span>
                     {subThreshRE  != null
-                      ? <span><span style={{ color:"#ef4444" }}>- -</span> RE sub: {subThreshRE.toFixed(1)} pts ({subRE.source === "league" ? "league fallback" : "team avg"})</span>
-                      : <span style={{ color:"rgba(255,255,255,0.3)" }}>RE sub: no injury data</span>}
+                      ? <span><span style={{ color:"#ef4444" }}>- -</span> ML sub: {subThreshRE.toFixed(1)} pts ({subRE.source === "league" ? "league fallback" : "team avg"})</span>
+                      : <span style={{ color:"rgba(255,255,255,0.3)" }}>ML sub: no injury data</span>}
                     {subThreshPRM != null
-                      ? <span><span style={{ color:"#f97316" }}>- -</span> PRM sub: {subThreshPRM.toFixed(1)} pts ({subPRM.source === "league" ? "league fallback" : "team avg"})</span>
-                      : <span style={{ color:"rgba(255,255,255,0.3)" }}>PRM sub: no injury data</span>}
+                      ? <span><span style={{ color:"#f97316" }}>- -</span> MATH sub: {subThreshPRM.toFixed(1)} pts ({subPRM.source === "league" ? "league fallback" : "team avg"})</span>
+                      : <span style={{ color:"rgba(255,255,255,0.3)" }}>MATH sub: no injury data</span>}
                   </div>
                 </div>
 
@@ -709,7 +725,7 @@ export default function Dashboard() {
                         const wp = playsRiskEngine.filter(p => p.week === w);
                         const avg  = wp.reduce((a,b)=>a+b.risk,0)/wp.length;
                         const high = wp.filter(p=>p.isHigh).length;
-                        const inj  = wp.filter(p=>p.isInjury).length;
+                        const inj  = wp.filter(p=>p.isInjuryPlay).length;
                         const sacks= wp.filter(p=>p.sack).length;
                         return (
                           <div key={w} onClick={() => setWeek(week===w?null:w)}
@@ -732,7 +748,7 @@ export default function Dashboard() {
                         const wp = playsPlayerRisk.filter(p => p.week === w);
                         const avg  = wp.reduce((a,b)=>a+b.risk,0)/wp.length;
                         const high = wp.filter(p=>p.isHigh).length;
-                        const inj  = wp.filter(p=>p.isInjury).length;
+                        const inj  = wp.filter(p=>p.isInjuryPlay).length;
                         return (
                           <div key={w} onClick={() => setWeek(week===w?null:w)}
                             className={`week-card ${week===w?"active":""}`}>
@@ -849,7 +865,7 @@ export default function Dashboard() {
                         </thead>
                         <tbody>
                           {tdata.slice(0,150).map((p,i) => (
-                            <tr key={i} className={p.isInjury?"row-injury":p.isHigh?"row-high":""}>
+                            <tr key={i} className={p.isInjuryPlay?"row-injury":p.isHigh?"row-high":""}>
                               <td className="td-muted">{p.idx}</td>
                               <td className="td-muted">{p.week}</td>
                               <td className={`td-${p.playType==="pass"?"pass":p.playType==="run"?"run":"special"}`}

@@ -54,8 +54,8 @@ for team in valid_teams:
     for pos in POSITIONS:
         plays = output[team][pos]
         high  = sum(1 for p in plays if p["isHigh"])
-        inj   = sum(1 for p in plays if p["isInjury"])
-        print(f"  {pos}: {len(plays)} plays  high={high}  injuries={inj}")
+        inj_plays = sum(1 for p in plays if p["isInjuryPlay"])
+        print(f"  {pos}: {len(plays)} plays  high={high}  injury_plays={inj_plays}")
     print()
 
 Path(args.out).parent.mkdir(parents=True, exist_ok=True)
